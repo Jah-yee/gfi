@@ -83,13 +83,26 @@ class GitHubSearcher:
 
     def _get_stars(self, repo: str) -> int:
         """Get star count for a repo."""
-        data = self._run_gh(["repos", repo, "--jq", ".stargazers_count"])
-        return data if isinstance(data, int) else 0
+        cmd = ["gh", "api", f"repos/{repo}", "--jq", ".stargazers_count"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                return int(result.stdout.strip())
+        except (ValueError, subprocess.TimeoutExpired):
+            pass
+        return 0
 
     def _get_language(self, repo: str) -> str:
         """Get primary language for a repo."""
-        data = self._run_gh(["repos", repo, "--jq", ".language"])
-        return data if isinstance(data, str) else ""
+        cmd = ["gh", "api", f"repos/{repo}", "--jq", ".language"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                lang = result.stdout.strip().strip('"')
+                return lang
+        except subprocess.TimeoutExpired:
+            pass
+        return ""
 
     def search(
         self,
@@ -148,23 +161,22 @@ class GitHubSearcher:
         if language and self._get_language(repo) != language:
             return
 
-        # Build search query
-        search_terms = [
+        # Build search query - use hyphenated label form (GitHub search compatible)
+        label_alt = label.replace(" ", "-")
+
+        search_query_parts = [
             f"repo:{repo}",
-            f"is:issue",
-            f"label:\"{label}\"",
+            "is:issue",
+            f"label:{label_alt}",
             f"state:{state}",
         ]
         if created_after:
-            search_terms.append(f"created:>={created_after}")
+            search_query_parts.append(f"created:>={created_after}")
 
-        search_query = " ".join(search_terms)
-        if query and query != label:
-            search_query = f"{query} {search_query}"
-
+        # gh search needs each term as separate arg, not a single string
         cmd = [
             "gh", "search", "issues",
-            search_query,
+            *search_query_parts,
             "--json", "number,title,url,state,labels,assignees,createdAt,updatedAt,body",
             "--limit", str(limit),
         ]
@@ -197,6 +209,8 @@ class GitHubSearcher:
                 continue
             yield issue
 
+
+
     def _search_global(
         self,
         query: str,
@@ -209,11 +223,11 @@ class GitHubSearcher:
         limit: int,
     ) -> Iterator[Issue]:
         """Search globally across GitHub."""
-        # Build search query - try both label formats (with/without hyphens)
+        # Build search query - use hyphenated label form (GitHub search compatible)
         label_alt = label.replace(" ", "-")
         search_terms = [
             "is:issue",
-            f"(label:\"{label}\" OR label:\"{label_alt}\")",
+            f"label:{label_alt}",
             f"state:{state}",
             "no:assignee",
         ]
@@ -222,13 +236,10 @@ class GitHubSearcher:
         if created_after:
             search_terms.append(f"created:>={created_after}")
 
-        search_query = " ".join(search_terms)
-        if query and query != label:
-            search_query = f"{query} {search_query}"
-
+        # gh search needs each term as separate arg, not a single string
         cmd = [
             "gh", "search", "issues",
-            search_query,
+            *search_terms,
             "--json", "number,title,repository,url,state,labels,assignees,createdAt,updatedAt,body",
             "--sort", "updated",
             "--limit", str(limit),
