@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+src/gfi/__init__.py
+src/gfi/cli.py
+src/gfi/search.py
+src/gfi.egg-info/PKG-INFO
+src/gfi.egg-info/SOURCES.txt
+src/gfi.egg-info/dependency_links.txt
+src/gfi.egg-info/entry_points.txt
+src/gfi.egg-info/requires.txt
+src/gfi.egg-info/top_level.txt
+tests/test_search.py
