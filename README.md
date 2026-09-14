@@ -5,14 +5,30 @@ Search and filter GitHub issues for contributors. Built for autonomous workflows
 ## Install
 
 ```bash
+pip install gfi
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/yunaremaia/gfi.git
+cd gfi
 pip install -e .
 ```
 
-## Usage
+## Features
+
+- **Smart search**: Auto-filters by `good first issue` label
+- **Seen tracking**: Tracks seen issues to avoid repetition
+- **Trending mode**: Scans popular repos for new opportunities
+- **JSON output**: For automation and CI integration
+- **Rich terminal output**: Tables and panels
+
+## Quick Start
 
 ```bash
-# Search globally
-gfi search --language python --stars-min 100 --limit 10
+# Search for good first issues
+gfi search --language python --stars-min 100
 
 # Search a specific repo
 gfi repo anchore/grype --limit 5
@@ -20,24 +36,94 @@ gfi repo anchore/grype --limit 5
 # Trending issues across popular repos
 gfi trending --limit 10
 
-# Fresh feed of unseen issues
+# Fresh feed (unseen issues only)
 gfi feed --limit 20
-
-# JSON output
-gfi search --json-output > issues.json
 
 # Open issue in browser
 gfi open owner/repo 123
+
+# Reset seen cache
+gfi reset
 ```
 
-## Why
+## CLI Reference
 
-Tools like `gh search` are powerful but verbose. `gfi` focuses on the contributor workflow:
+### `gfi search`
 
-- Auto-filters by `good first issue` label
-- Tracks seen issues to avoid repetition
-- Trending mode scans popular repos
-- JSON output for automation
+Search globally for good first issues.
+
+```bash
+gfi search --language python --stars-min 100 --limit 10
+gfi search --repos kubernetes/kubernetes --repos microsoft/vscode
+gfi search --no-assigned  # Include assigned issues
+gfi search --created-after 2026-08-01  # Recent issues only
+```
+
+### `gfi repo REPO`
+
+List good first issues in a specific repository.
+
+```bash
+gfi repo anchore/grype --limit 10
+gfi repo yunaremaia/driftcheck --json-output
+```
+
+### `gfi trending`
+
+Show trending good first issues across popular repositories.
+
+```bash
+gfi trending --limit 20
+gfi trending --json-output > trending.json
+```
+
+### `gfi feed`
+
+Show a feed of unseen good first issues. Marks issues as seen automatically.
+
+```bash
+gfi feed --limit 20
+gfi feed --limit 50 --json-output
+```
+
+### `gfi stats`
+
+Show statistics about seen issues.
+
+```bash
+gfi stats
+```
+
+### `gfi reset`
+
+Reset the seen issues cache. All issues become "fresh" again.
+
+```bash
+gfi reset
+```
+
+### `gfi open REPO NUMBER`
+
+Open a GitHub issue in the browser.
+
+```bash
+gfi open yunaremaia/driftcheck 21
+```
+
+## JSON Output
+
+All commands support `--json-output` for automation:
+
+```bash
+gfi search --limit 5 --json-output | jq '.[].title'
+```
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
 
 ## License
 
