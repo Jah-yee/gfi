@@ -28,6 +28,7 @@ dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 
 [project.scripts]
 gfi = "gfi.cli:cli"
+gh-gfi = "gfi.gh_extension:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
