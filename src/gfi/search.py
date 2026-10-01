@@ -196,6 +196,7 @@ class GitHubSearcher:
         label_alt = label.replace(" ", "-")
 
         search_query_parts = [
+            query,
             f"repo:{repo}",
             "is:issue",
             f"label:{label_alt}",
@@ -276,11 +277,13 @@ class GitHubSearcher:
         # Build search query - use hyphenated label form (GitHub search compatible)
         label_alt = label.replace(" ", "-")
         search_terms = [
+            query,
             "is:issue",
             f"label:{label_alt}",
             f"state:{state}",
-            "no:assignee",
         ]
+        if unassigned_only:
+            search_terms.append("no:assignee")
         if language:
             search_terms.append(f"language:{language}")
         if created_after:

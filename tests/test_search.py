@@ -201,6 +201,19 @@ class TestSearchRepo:
         assert not any(part.startswith("created:") for part in cmd)
 
     @patch("gfi.search.subprocess.run")
+    def test_search_repo_includes_query_in_command(self, mock_run, searcher):
+        mock_run.return_value = _gh_result(stdout="[]")
+
+        list(searcher._search_repo(
+            "owner/repo", "my-search-term", "good first issue", "open", None,
+            None, True, None,
+            max_age_days=None, repo_max_age_days=None, limit=20,
+        ))
+
+        cmd = mock_run.call_args[0][0]
+        assert "my-search-term" in cmd
+
+    @patch("gfi.search.subprocess.run")
     def test_adds_created_after_term(self, mock_run, searcher):
         mock_run.return_value = _gh_result(stdout="[]")
 
@@ -348,6 +361,30 @@ class TestSearchGlobal:
         assert "label:good-first-issue" in cmd
         assert "state:open" in cmd
         assert "no:assignee" in cmd
+
+    @patch("gfi.search.subprocess.run")
+    def test_search_global_includes_query_in_command(self, mock_run, searcher):
+        mock_run.return_value = _gh_result(stdout="[]")
+
+        list(searcher._search_global(
+            "my-search-term", "good first issue", "open", None, None, True, None,
+            max_age_days=None, repo_max_age_days=None, limit=20,
+        ))
+
+        cmd = mock_run.call_args[0][0]
+        assert "my-search-term" in cmd
+
+    @patch("gfi.search.subprocess.run")
+    def test_search_global_excludes_no_assignee_when_unassigned_only_false(self, mock_run, searcher):
+        mock_run.return_value = _gh_result(stdout="[]")
+
+        list(searcher._search_global(
+            "query", "good first issue", "open", None, None, False, None,
+            max_age_days=None, repo_max_age_days=None, limit=20,
+        ))
+
+        cmd = mock_run.call_args[0][0]
+        assert "no:assignee" not in cmd
 
     @patch("gfi.search.subprocess.run")
     def test_adds_language_and_created_after_terms(self, mock_run, searcher):
