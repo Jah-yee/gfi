@@ -11,6 +11,17 @@ from typing import Iterator
 from urllib.parse import quote
 
 
+def _safe_repo_path(repo: str) -> str:
+    """Build a repo path for a `gh api repos/:owner/:repo` endpoint.
+
+    Each path segment is percent-encoded individually so that the separating `/`
+    is preserved.  Using ``quote(repo, safe="")`` on the whole string encodes
+    the `/` as ``%2F`` and makes the endpoint ``repos/owner%2Frepo``, which
+    GitHub returns 404 for.
+    """
+    return "/".join(quote(seg, safe="") for seg in repo.split("/"))
+
+
 @dataclass
 class Issue:
     """A GitHub issue with relevant metadata."""
@@ -85,8 +96,7 @@ class GitHubSearcher:
 
     def _get_stars(self, repo: str) -> int:
         """Get star count for a repo."""
-        safe_repo = quote(repo, safe="")
-        cmd = ["gh", "api", f"repos/{safe_repo}", "--jq", ".stargazers_count"]
+        cmd = ["gh", "api", f"repos/{_safe_repo_path(repo)}", "--jq", ".stargazers_count"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
@@ -97,8 +107,7 @@ class GitHubSearcher:
 
     def _get_language(self, repo: str) -> str:
         """Get primary language for a repo."""
-        safe_repo = quote(repo, safe="")
-        cmd = ["gh", "api", f"repos/{safe_repo}", "--jq", ".language"]
+        cmd = ["gh", "api", f"repos/{_safe_repo_path(repo)}", "--jq", ".language"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
