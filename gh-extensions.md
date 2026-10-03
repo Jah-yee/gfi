@@ -36,14 +36,34 @@ This points `gh gfi` at your working tree, so changes to `src/gfi/cli.py` are pi
 
 ## How it works
 
-The extension entry point is declared in `pyproject.toml`:
+gfi ships two entry points, and they do different jobs.
+
+**`gh-gfi` in the repository root** is the extension itself. `gh extension install`
+clones this repository and looks for an executable named `gh-<name>` in the root,
+so the root `gh-gfi` script is what makes `gh gfi` work. It prefers an installed
+`gfi` console script and otherwise runs the module straight from the checkout:
+
+```bash
+# installed: delegate to the console script
+exec gfi "$@"
+# otherwise: run from this checkout
+PYTHONPATH="$SCRIPT_DIR/src" python3 -m gfi "$@"
+```
+
+Without that root script the extension installs but every invocation fails with
+`fork/exec .../gh-gfi: no such file or directory`.
+
+**`gh-gfi` in `pyproject.toml`** is the console script pip installs, which is
+what lets `gfi` (and `gh-gfi`) run without `gh` at all:
 
 ```toml
 [project.scripts]
 gfi = "gfi.cli:cli"
+gh-gfi = "gfi.gh_extension:main"
 ```
 
-GitHub CLI discovers extensions by looking for an executable named `gh-<name>` in the installed package. The `gfi` package ships `gfi` as a script entry point; the `gh extension install` command wraps it so `gh gfi` and `gfi` behave identically.
+Both entry points call the same `gfi.gh_extension:main`, so `gh gfi` and `gfi`
+accept the same flags and behave identically.
 
 ## Pattern reference: `aipr`
 

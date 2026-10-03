@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Iterator
 from urllib.parse import quote
 
 
@@ -20,6 +19,24 @@ def _safe_repo_path(repo: str) -> str:
     GitHub returns 404 for.
     """
     return "/".join(quote(seg, safe="") for seg in repo.split("/"))
+
+
+def quote_search_value(value: str) -> str:
+    """Quote a user-supplied value for use as a GitHub search qualifier value.
+
+    Search terms are passed to GitHub as a `gh search issues` argument list, so
+    percent-encoding is wrong here (gh would search for a literal ``%20``).
+    What the search parser needs is a quoted value with its own backslashes and
+    double quotes escaped, otherwise a label like ``needs "urgent"`` closes the
+    quote early and the remaining words are parsed as new qualifiers.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def search_qualifier(name: str, value: str) -> str:
+    """Build a single ``name:"value"`` search qualifier."""
+    return f"{name}:{quote_search_value(value)}"
 
 
 @dataclass
@@ -62,21 +79,21 @@ class GitHubSearcher:
     """Search GitHub issues using gh CLI."""
 
     def __init__(self, cache_dir: Path | None = None):
-        self.cache_dir = cache_dir or Path("/tmp/gfi-cache")
+        self.cache_dir = cache_dir or Path.home() / ".gfi"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.seen_file = self.cache_dir / "seen.json"
         self._seen = self._load_seen()
 
-    def _load_seen(self) -> set[str]:
+    def _load_seen(self) -> dict[str, dict]:
         if self.seen_file.exists():
             try:
-                return set(json.loads(self.seen_file.read_text()))
-            except json.JSONDecodeError:
+                return json.loads(self.seen_file.read_text())
+            except (json.JSONDecodeError, TypeError):
                 pass
-        return set()
+        return {}
 
     def _save_seen(self) -> None:
-        self.seen_file.write_text(json.dumps(list(self._seen), indent=2))
+        self.seen_file.write_text(json.dumps(self._seen, indent=2))
 
     def _run_gh(self, args: list[str]) -> dict | list:
         """Run gh CLI and return JSON output."""
@@ -96,7 +113,10 @@ class GitHubSearcher:
 
     def _get_stars(self, repo: str) -> int:
         """Get star count for a repo."""
-        cmd = ["gh", "api", f"repos/{_safe_repo_path(repo)}", "--jq", ".stargazers_count"]
+        cmd = [
+            "gh", "api", f"repos/{_safe_repo_path(repo)}",
+            "--jq", ".stargazers_count",
+        ]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
@@ -117,6 +137,20 @@ class GitHubSearcher:
             pass
         return ""
 
+    def _get_repo_push_date(self, repo: str) -> datetime | None:
+        """Get last push date for a repo."""
+        safe_repo = quote(repo, safe="")
+        cmd = ["gh", "api", f"repos/{safe_repo}", "--jq", ".pushed_at"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                pushed_str = result.stdout.strip().strip('"')
+                if pushed_str:
+                    return datetime.fromisoformat(pushed_str.replace("Z", "+00:00"))
+        except (ValueError, subprocess.TimeoutExpired):
+            pass
+        return None
+
     def search(
         self,
         query: str = "good first issue",
@@ -126,6 +160,8 @@ class GitHubSearcher:
         stars_min: int | None = None,
         unassigned_only: bool = True,
         created_after: str | None = None,
+        max_age_days: int | None = None,
+        repo_max_age_days: int | None = None,
         limit: int = 20,
         repos: list[str] | None = None,
     ) -> Iterator[Issue]:
@@ -139,6 +175,8 @@ class GitHubSearcher:
             stars_min: Minimum repo stars
             unassigned_only: Only return unassigned issues
             created_after: ISO date (e.g., "2026-08-01")
+            max_age_days: Only include issues newer than this many days
+            repo_max_age_days: Only include repos active within this many days
             limit: Max results
             repos: Specific repos to search (e.g., ["owner/repo"])
         """
@@ -146,12 +184,18 @@ class GitHubSearcher:
             for repo in repos:
                 yield from self._search_repo(
                     repo, query, label, state, language,
-                    stars_min, unassigned_only, created_after, limit
+                    stars_min, unassigned_only, created_after,
+                    max_age_days=max_age_days,
+                    repo_max_age_days=repo_max_age_days,
+                    limit=limit,
                 )
         else:
             yield from self._search_global(
                 query, label, state, language,
-                stars_min, unassigned_only, created_after, limit
+                stars_min, unassigned_only, created_after,
+                max_age_days=max_age_days,
+                repo_max_age_days=repo_max_age_days,
+                limit=limit,
             )
 
     def _search_repo(
@@ -164,7 +208,10 @@ class GitHubSearcher:
         stars_min: int | None,
         unassigned_only: bool,
         created_after: str | None,
-        limit: int,
+        *,
+        max_age_days: int | None = None,
+        repo_max_age_days: int | None = None,
+        limit: int = 20,
     ) -> Iterator[Issue]:
         """Search within a specific repo."""
         # First check stars threshold
@@ -174,13 +221,13 @@ class GitHubSearcher:
         if language and self._get_language(repo) != language:
             return
 
-        # Build search query - use hyphenated label form (GitHub search compatible)
-        label_alt = label.replace(" ", "-")
-
+        # Build search query - quote label/user values so spaces and quotes
+        # inside them are treated as data rather than query syntax.
         search_query_parts = [
+            query,
             f"repo:{repo}",
             "is:issue",
-            f"label:{label_alt}",
+            search_qualifier("label", label),
             f"state:{state}",
         ]
         if created_after:
@@ -189,8 +236,10 @@ class GitHubSearcher:
         # gh search needs each term as separate arg, not a single string
         cmd = [
             "gh", "search", "issues",
-            *search_query_parts,
-            "--json", "number,title,url,state,labels,assignees,createdAt,updatedAt,body,commentsCount",
+            *[t for t in search_query_parts if t.strip()],
+            "--json",
+            "number,title,url,state,labels,assignees,"
+            "createdAt,updatedAt,body,commentsCount",
             "--limit", str(limit),
         ]
 
@@ -209,7 +258,9 @@ class GitHubSearcher:
                 repo=repo,
                 url=item.get("url", ""),
                 state=item.get("state", ""),
-                labels=[l.get("name", "") for l in item.get("labels", [])],
+                labels=[
+                    label.get("name", "") for label in item.get("labels", [])
+                ],
                 assignees=[a.get("login", "") for a in item.get("assignees", [])],
                 created_at=item.get("createdAt", ""),
                 updated_at=item.get("updatedAt", ""),
@@ -221,6 +272,21 @@ class GitHubSearcher:
 
             if unassigned_only and issue.is_assigned:
                 continue
+
+            # Filter by max issue age
+            if max_age_days is not None:
+                age = issue.age_days()
+                if age is not None and age > max_age_days:
+                    continue
+
+            # Filter by repo activity
+            if repo_max_age_days is not None:
+                push_date = self._get_repo_push_date(repo)
+                if push_date is not None:
+                    days_since_push = (datetime.now(push_date.tzinfo) - push_date).days
+                    if days_since_push > repo_max_age_days:
+                        continue
+
             yield issue
 
 
@@ -234,27 +300,34 @@ class GitHubSearcher:
         stars_min: int | None,
         unassigned_only: bool,
         created_after: str | None,
-        limit: int,
+        *,
+        max_age_days: int | None = None,
+        repo_max_age_days: int | None = None,
+        limit: int = 20,
     ) -> Iterator[Issue]:
         """Search globally across GitHub."""
-        # Build search query - use hyphenated label form (GitHub search compatible)
-        label_alt = label.replace(" ", "-")
+        # Build search query - quote label/language so spaces and quotes inside
+        # them are treated as data rather than query syntax.
         search_terms = [
+            query,
             "is:issue",
-            f"label:{label_alt}",
+            search_qualifier("label", label),
             f"state:{state}",
-            "no:assignee",
         ]
+        if unassigned_only:
+            search_terms.append("no:assignee")
         if language:
-            search_terms.append(f"language:{language}")
+            search_terms.append(search_qualifier("language", language))
         if created_after:
             search_terms.append(f"created:>={created_after}")
 
         # gh search needs each term as separate arg, not a single string
         cmd = [
             "gh", "search", "issues",
-            *search_terms,
-            "--json", "number,title,repository,url,state,labels,assignees,createdAt,updatedAt,body,commentsCount",
+            *[t for t in search_terms if t.strip()],
+            "--json",
+            "number,title,repository,url,state,labels,assignees,"
+            "createdAt,updatedAt,body,commentsCount",
             "--sort", "updated",
             "--limit", str(limit),
         ]
@@ -280,7 +353,9 @@ class GitHubSearcher:
                 repo=repo,
                 url=item.get("url", ""),
                 state=item.get("state", ""),
-                labels=[l.get("name", "") for l in item.get("labels", [])],
+                labels=[
+                    label.get("name", "") for label in item.get("labels", [])
+                ],
                 assignees=[a.get("login", "") for a in item.get("assignees", [])],
                 created_at=item.get("createdAt", ""),
                 updated_at=item.get("updatedAt", ""),
@@ -292,24 +367,50 @@ class GitHubSearcher:
 
             if unassigned_only and issue.is_assigned:
                 continue
+
+            # Filter by max issue age
+            if max_age_days is not None:
+                age = issue.age_days()
+                if age is not None and age > max_age_days:
+                    continue
+
+            # Filter by repo activity
+            if repo_max_age_days is not None:
+                push_date = self._get_repo_push_date(repo)
+                if push_date is not None:
+                    days_since_push = (datetime.now(push_date.tzinfo) - push_date).days
+                    if days_since_push > repo_max_age_days:
+                        continue
+
             yield issue
 
+    def _seen_key(self, issue: Issue) -> str:
+        """Return the dedup key for an issue: URL preferred, repo+number fallback."""
+        return issue.url or f"{issue.repo}#{issue.number}"
+
     def mark_seen(self, issue: Issue) -> None:
-        """Mark an issue as seen."""
-        key = f"{issue.repo}#{issue.number}"
-        self._seen.add(key)
+        """Mark an issue as seen, keyed by URL for cross-query dedup."""
+        key = self._seen_key(issue)
+        self._seen[key] = {"seen_at": datetime.now().isoformat()}
         self._save_seen()
 
     def is_seen(self, issue: Issue) -> bool:
-        """Check if issue was previously seen."""
-        key = f"{issue.repo}#{issue.number}"
-        return key in self._seen
+        """Check if issue was previously seen, by URL (or repo+number fallback)."""
+        return self._seen_key(issue) in self._seen
 
     def filter_unseen(self, issues: Iterator[Issue]) -> Iterator[Issue]:
         """Yield only issues not previously seen."""
         for issue in issues:
-            if not self.is_seen(issue):
+            if self._seen_key(issue) not in self._seen:
                 yield issue
+
+    def sort_deterministicly(self, issues: list[Issue]) -> list[Issue]:
+        """Sort issues deterministically by (stars desc, created_at desc)."""
+        return sorted(
+            issues,
+            key=lambda i: (i.stars, i.created_at or ""),
+            reverse=True,
+        )
 
 
 class HotTopics:

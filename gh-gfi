@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# gh-gfi — GitHub CLI extension entry point (script extension).
+#
+# `gh extension install yunaremaia/gfi` clones this repository and looks for an
+# executable named `gh-<extension-name>` in the repository root. This file is
+# that executable. Without it `gh gfi` fails with:
+#
+#     failed to run extension: fork/exec .../gh-gfi: no such file or directory
+#
+# gh runs the code from the clone it made, so the checkout is preferred and the
+# program name is pinned to "gh gfi" by gfi.gh_extension.main. The fallback to an
+# installed `gfi` console script only applies when this checkout cannot be
+# imported (e.g. gfi's dependencies are not installed for this interpreter).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if command -v python3 > /dev/null 2>&1; then
+  PYTHON="${PYTHON:-python3}"
+else
+  PYTHON="${PYTHON:-python}"
+fi
+
+# Probe importability only. This must never receive the user's arguments: a
+# fallback that re-runs the command on failure would execute real invocations
+# twice and mask genuine errors.
+if env PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PYTHON" -c "import gfi.gh_extension" > /dev/null 2>&1; then
+  exec env PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON" -m gfi "$@"
+fi
+
+if command -v gfi > /dev/null 2>&1; then
+  exec gfi "$@"
+fi
+
+echo "gh-gfi: cannot run gfi from this checkout." >&2
+echo "Install gfi's dependencies for ${PYTHON} (click, rich), or install gfi itself:" >&2
+echo "  pip install git+https://github.com/yunaremaia/gfi.git" >&2
+exit 1

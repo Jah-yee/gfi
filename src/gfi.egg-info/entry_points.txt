@@ -1,3 +1,0 @@
-[console_scripts]
-gfi = gfi.cli:cli
-gh-gfi = gfi.gh_extension:main

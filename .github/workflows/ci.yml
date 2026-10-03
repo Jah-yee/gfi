@@ -15,10 +15,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -32,15 +32,76 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       - name: Install gfi with dev dependencies
         run: pip install -e ".[dev]"
 
-      - name: Run tests (lint gate)
-        run: pytest
+      # Ruff is installed from the `dev` extra so the linter version CI uses is
+      # the one declared in pyproject.toml, not a number hardcoded here. That
+      # extra pins `ruff==0.16.10` exactly: a floating range would let a new
+      # ruff release change what this gate reports, reddening CI without any
+      # code change. Bump the pin in a PR, deliberately.
+      #
+      # The rule set (E, F, I, UP, B) lives in [tool.ruff.lint] in
+      # pyproject.toml. Fix the code a violation points at -- do not silence it
+      # with a blanket `# ruff: noqa`, which would defeat the point of this gate.
+      #
+      # This step is a real gate: it fails the run on any finding. It was added
+      # with the tree already clean (ruff 0.16.10, `ruff check .` -> 0 findings
+      # against the pinned rule set), so no `--exit-zero` baseline was needed.
+      - name: Lint with ruff
+        run: |
+          ruff --version
+          ruff check --no-cache .
+
+  # Issue #30 asked for a CI check that the gh extension builds. A build here
+  # means "gh can actually discover and execute it": gh clones the repo and
+  # looks for an executable named `gh-<name>` in the repository root, so a
+  # missing or non-executable `gh-gfi` produces an extension that installs and
+  # then fails at run time with a fork/exec error. This job installs the
+  # extension from the checkout and runs it.
+  extension:
+    name: gh extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install gfi with dev dependencies
+        run: pip install -e ".[dev]"
+
+      # A checkout loses the executable bit only in unusual cases, but this is
+      # the one property the extension cannot work without, so assert it
+      # explicitly rather than discovering it as a run-time fork/exec error.
+      - name: Check gh-gfi root script is executable
+        run: test -x ./gh-gfi
+
+      # gh derives the extension name from the directory, and for a script
+      # extension it requires a checkout named `gh-<name>` containing a
+      # `gh-<name>` executable. Clone into that name to reproduce exactly what
+      # `gh extension install yunaremaia/gfi` does, then install from inside
+      # the checkout: `gh extension install` takes `.` for a local repository,
+      # not an absolute path.
+      - name: Install the extension from a gh-named checkout
+        run: |
+          git clone --depth 1 . "$RUNNER_TEMP/gh-gfi"
+          cd "$RUNNER_TEMP/gh-gfi"
+          gh extension install --force .
+
+      - name: Run the extension
+        run: gh gfi --help
+
+      # Covers the second entry point too: the console script installed by pip.
+      - name: Run the installed console script
+        run: gh-gfi --help

@@ -1,11 +1,16 @@
 # gfi — Good First Issue Finder
 
+[![CI](https://github.com/yunaremaia/gfi/actions/workflows/ci.yml/badge.svg)](https://github.com/yunaremaia/gfi/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/yunaremaia/gfi/blob/main/LICENSE)
+![Stars](https://img.shields.io/github/stars/yunaremaia/gfi)
+
 Search and filter GitHub issues for contributors. Built for autonomous workflows and humans alike.
 
 ## Install
 
 ```bash
-pip install gfi
+pip install git+https://github.com/yunaremaia/gfi.git
 ```
 
 Or from source:
@@ -18,27 +23,25 @@ pip install -e .
 
 ### GitHub CLI Extension (gh gfi)
 
-You can also use gfi as a GitHub CLI extension:
+Install gfi as a GitHub CLI extension and run it as `gh gfi`:
 
 ```bash
-# Install the package
-pip install gfi
+gh extension install yunaremaia/gfi
 
-# The gh-gfi wrapper is installed as a script
-# Add ~/.local/bin to PATH if needed
-export PATH="$HOME/.local/bin:$PATH"
-
-# Run via gh CLI
 gh gfi search --limit 10
 gh gfi trending
 gh gfi feed
 ```
 
-Or run the install script:
+If you already have gfi installed via pip, the `gh-gfi` console script also works
+on its own, without `gh`:
 
 ```bash
-./install-gh-extension.sh
+pip install git+https://github.com/yunaremaia/gfi.git
+gh-gfi search --limit 10
 ```
+
+See [gh-extensions.md](gh-extensions.md) for details.
 
 ## Features
 
@@ -83,6 +86,8 @@ gfi search --language python --stars-min 100 --csv
 gfi search --repos kubernetes/kubernetes --repos microsoft/vscode
 gfi search --no-assigned  # Include assigned issues
 gfi search --created-after 2026-08-01  # Recent issues only
+gfi search --max-age-days 30  # Issues opened in last 30 days
+gfi search --repo-max-age-days 90  # Repos active in last 90 days
 ```
 
 ### `gfi repo REPO`
@@ -112,6 +117,7 @@ Show a feed of unseen good first issues. Marks issues as seen automatically.
 ```bash
 gfi feed --limit 20
 gfi feed --limit 50 --json-output
+gfi feed --limit 20 --csv > feed.csv
 ```
 
 ### `gfi stats`
@@ -155,12 +161,41 @@ imports and data pipelines:
 gfi search --language python --stars-min 100 --csv > issues.csv
 ```
 
+`gfi feed` also supports `--csv`.
+
+### Machine-readable output is always clean
+
+With `--json-output` or `--csv`, **stdout carries the payload and nothing else**.
+Progress spinners, status text, and "no results" messages go to stderr, so the
+documented pipelines above work without any filtering:
+
+- `--json-output` always prints a valid JSON array — an empty result set is `[]`,
+  never a sentence.
+- `--csv` always prints a valid table — an empty result set is just the header
+  row, so readers get zero data rows rather than a parse error.
+
+This means `gfi ... --json-output | jq` and `gfi ... --csv > out.csv` are safe to
+use in cron jobs, CI steps, and pipelines without `2>/dev/null` or `grep`.
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
+
+
+If this tool is useful to you, a star helps other people find it.
+
+## Related tools
+
+- **[oss-contribution-finder](https://github.com/yunaremaia/oss-contribution-finder)** — find OSS projects ready to contribute to
+- **[aipr](https://github.com/yunaremaia/aipr)** — pre-screen repos for AI contribution policy
+- **[driftcheck](https://github.com/yunaremaia/driftcheck)** — detect version drift between docs and toolchain files
+- **[tool-call-retry](https://github.com/yunaremaia/tool-call-retry)** — retry failed tool calls with backoff
+
+Part of a family of focused, single-purpose developer tools — each one does one thing
+and does it well.
 
 ## License
 

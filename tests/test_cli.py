@@ -36,11 +36,33 @@ def issues():
 @pytest.fixture
 def fake_searcher(monkeypatch, issues):
     class FakeSearcher:
+        def __init__(self):
+            self.marked = []
+
         def search(self, **kwargs):
             return iter(issues)
 
         def is_seen(self, issue):
             return False
+
+        def _seen_key(self, issue):
+            return issue.url or f"{issue.repo}#{issue.number}"
+
+        def sort_deterministicly(self, issues):
+            return sorted(
+                issues,
+                key=lambda i: (i.stars, i.created_at or ""),
+                reverse=True,
+            )
+
+        # Mirrors GitHubSearcher.mark_seen, which `feed` calls in every output
+        # format. Without it this double raised AttributeError as soon as
+        # `feed --csv` reached the marking loop -- the very line the early
+        # return used to skip, which is how that bug stayed invisible here.
+        def mark_seen(self, issue):
+            self.marked.append(issue)
+
+        _seen = {}
 
     monkeypatch.setattr("gfi.cli.GitHubSearcher", FakeSearcher)
 
@@ -82,6 +104,7 @@ def test_search_csv_has_exact_header_and_escaped_rows(fake_searcher):
     [
         (["repo", "owner/project", "--csv"], 3),
         (["trending", "--limit", "2", "--csv"], 3),
+        (["feed", "--csv"], 3),
     ],
 )
 def test_other_commands_support_csv(fake_searcher, args, expected_rows):

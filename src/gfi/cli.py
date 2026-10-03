@@ -4,17 +4,19 @@ from __future__ import annotations
 import csv
 import json
 import sys
-from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from gfi.search import GitHubSearcher, Issue
 
 console = Console()
+# Human-facing notices (spinners, "no results" prose) go here whenever stdout
+# carries a machine-readable payload, so a piped consumer never sees them.
+err_console = Console(stderr=True)
 
 CSV_COLUMNS = (
     "number",
@@ -43,6 +45,22 @@ def _write_csv(issues: list[Issue]) -> None:
             issue.comments,
             issue.stars,
         ))
+
+
+def _notify_empty(json_out: bool, csv_out: bool, message: str) -> None:
+    """Report an empty result set without corrupting machine-readable stdout.
+
+    A caller parsing JSON or CSV needs a well-formed empty document -- that is
+    the most common outcome in practice, and a bare sentence on stdout is
+    unparseable at exactly the moment a script most needs a valid answer. So
+    the payload goes to stdout and the prose is diverted to stderr.
+    """
+    machine = json_out or csv_out
+    if json_out:
+        click.echo(json.dumps([], indent=2))
+    elif csv_out:
+        _write_csv([])
+    (err_console if machine else console).print(f"[yellow]{message}[/yellow]")
 
 
 def _format_date(date_str: str) -> str:
@@ -81,20 +99,64 @@ def cli():
 @click.option("--csv", "csv_out", is_flag=True, help="Output as CSV")
 @click.option("--no-assigned/--assigned", default=True, help="Exclude assigned issues")
 @click.option("--created-after", default=None, help="Created after date (YYYY-MM-DD)")
+@click.option(
+    "--max-age-days", default=None, type=int,
+    help="Only show issues newer than N days",
+)
+@click.option(
+    "--repo-max-age-days", default=None, type=int,
+    help="Only show repos active within N days",
+)
 @click.option("--repos", "-r", multiple=True, help="Specific repos to search")
 @click.option("--seen/--no-seen", default=True, help="Show only unseen issues")
+@click.option(
+    "--mark-seen", "mark_seen_url", default=None,
+    help="Mark a specific issue URL as seen",
+)
+@click.option("--show-seen", "show_seen", is_flag=True, help="List all marked issues")
 def search(
     query, label, language, stars_min, limit, json_out, csv_out,
-    no_assigned, created_after, repos, seen
+    no_assigned, created_after, max_age_days, repo_max_age_days,
+    repos, seen, mark_seen_url, show_seen
 ):
     """Search for good first issues on GitHub."""
     searcher = GitHubSearcher()
 
+    if show_seen:
+        seen_items = sorted(
+            searcher._seen.items(),
+            key=lambda x: x[1].get("seen_at", ""),
+            reverse=True,
+        )
+        if not seen_items:
+            console.print("[yellow]No issues marked as seen.[/yellow]")
+            return
+        console.print(
+            Panel(
+                f"[bold]Marked Issues ({len(seen_items)})[/bold]",
+                title="gfi — Seen Issues",
+            )
+        )
+        table = Table()
+        table.add_column("URL", width=55)
+        table.add_column("Seen At", width=20)
+        for url, meta in seen_items[:50]:
+            table.add_row(_truncate(url, 53), meta.get("seen_at", "—")[:19])
+        console.print(table)
+        return
+
+    if mark_seen_url:
+        searcher.mark_seen(
+            Issue(url=mark_seen_url, number=0, title="", repo="", state="")
+        )
+        console.print(f"[green]Marked as seen: {mark_seen_url}[/green]")
+        return
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        console=console,
-        disable=csv_out,
+        console=err_console if (json_out or csv_out) else console,
+        disable=json_out or csv_out,
     ) as progress:
         task = progress.add_task("Searching GitHub...", total=None)
 
@@ -105,17 +167,25 @@ def search(
             stars_min=stars_min,
             unassigned_only=no_assigned,
             created_after=created_after,
+            max_age_days=max_age_days,
+            repo_max_age_days=repo_max_age_days,
             limit=limit,
             repos=list(repos) if repos else None,
         ))
 
+        # Deterministic sort by (stars desc, created_at desc)
+        results = searcher.sort_deterministicly(results)
+
         if seen:
-            results = [r for r in results if not searcher.is_seen(r)]
+            results = [
+                r for r in results
+                if searcher._seen_key(r) not in searcher._seen
+            ]
 
         progress.update(task, completed=True)
 
     if not results:
-        console.print("[yellow]No issues found matching criteria.[/yellow]")
+        _notify_empty(json_out, csv_out, "No issues found matching criteria.")
         return
 
     if json_out:
@@ -177,8 +247,8 @@ def repo(repo, limit, json_out, csv_out):
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        console=console,
-        disable=csv_out,
+        console=err_console if (json_out or csv_out) else console,
+        disable=json_out or csv_out,
     ) as progress:
         task = progress.add_task(f"Searching {repo}...", total=None)
 
@@ -190,7 +260,9 @@ def repo(repo, limit, json_out, csv_out):
         progress.update(task, completed=True)
 
     if not results:
-        console.print(f"[yellow]No good first issues found in {repo}.[/yellow]")
+        _notify_empty(
+            json_out, csv_out, f"No good first issues found in {repo}."
+        )
         return
 
     if json_out:
@@ -256,8 +328,8 @@ def trending(limit, json_out, csv_out):
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        console=console,
-        disable=csv_out,
+        console=err_console if (json_out or csv_out) else console,
+        disable=json_out or csv_out,
     ) as progress:
         task = progress.add_task("Scanning trending repos...", total=len(repos))
 
@@ -268,7 +340,7 @@ def trending(limit, json_out, csv_out):
             progress.advance(task)
 
     if not all_issues:
-        console.print("[yellow]No trending issues found.[/yellow]")
+        _notify_empty(json_out, csv_out, "No trending issues found.")
         return
 
     # Sort by stars descending
@@ -292,7 +364,8 @@ def trending(limit, json_out, csv_out):
         return
 
     console.print(Panel(
-        f"[bold]Trending Good First Issues[/bold]\n{len(all_issues)} issues across {len(repos)} repos",
+        f"[bold]Trending Good First Issues[/bold]\n"
+        f"{len(all_issues)} issues across {len(repos)} repos",
         title="gfi — Trending"
     ))
 
@@ -316,14 +389,16 @@ def trending(limit, json_out, csv_out):
 @cli.command()
 @click.option("--limit", "-n", default=20, help="Max results")
 @click.option("--json-output", "json_out", is_flag=True, help="Output as JSON")
-def feed(limit, json_out):
+@click.option("--csv", "csv_out", is_flag=True, help="Output as CSV")
+def feed(limit, json_out, csv_out):
     """Show a feed of new good first issues (unseen)."""
     searcher = GitHubSearcher()
 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        console=console,
+        console=err_console if (json_out or csv_out) else console,
+        disable=json_out or csv_out,
     ) as progress:
         task = progress.add_task("Fetching feed...", total=None)
 
@@ -335,7 +410,7 @@ def feed(limit, json_out):
         progress.update(task, completed=True)
 
     if not results:
-        console.print("[yellow]No new issues. Try again later![/yellow]")
+        _notify_empty(json_out, csv_out, "No new issues. Try again later!")
         return
 
     if json_out:
@@ -350,32 +425,38 @@ def feed(limit, json_out):
                 "language": issue.language,
             })
         click.echo(json.dumps(output, indent=2))
-        return
+    elif csv_out:
+        _write_csv(results)
+    else:
+        console.print(Panel(
+            f"[bold]Fresh Feed[/bold> — {len(results)} new issues",
+            title="gfi — Feed"
+        ))
 
-    console.print(Panel(
-        f"[bold]Fresh Feed[/bold] — {len(results)} new issues",
-        title="gfi — Feed"
-    ))
+        table = Table(show_lines=True)
+        table.add_column("#", style="cyan", width=6)
+        table.add_column("Title", width=50)
+        table.add_column("Repo", width=25)
+        table.add_column("Stars", justify="right", width=8)
+        table.add_column("Lang", width=10)
 
-    table = Table(show_lines=True)
-    table.add_column("#", style="cyan", width=6)
-    table.add_column("Title", width=50)
-    table.add_column("Repo", width=25)
-    table.add_column("Stars", justify="right", width=8)
-    table.add_column("Lang", width=10)
+        for issue in results:
+            table.add_row(
+                str(issue.number),
+                _truncate(issue.title, 48),
+                _truncate(issue.repo, 23),
+                f"⭐ {issue.stars}" if issue.stars else "—",
+                issue.language or "—",
+            )
 
-    for issue in results:
-        table.add_row(
-            str(issue.number),
-            _truncate(issue.title, 48),
-            _truncate(issue.repo, 23),
-            f"⭐ {issue.stars}" if issue.stars else "—",
-            issue.language or "—",
-        )
+        console.print(table)
 
-    console.print(table)
-
-    # Mark as seen
+    # Mark as seen -- in every output format, and after the payload has been
+    # delivered. This loop used to sit at the end of the human-only branch, so
+    # the --json-output and --csv branches returned before reaching it: scripted
+    # callers got their payload but the seen cache never grew, so every run
+    # handed back the same issues. Keeping it below the emit is deliberate -- an
+    # issue is only consumed once it has actually been shown.
     for issue in results:
         searcher.mark_seen(issue)
 
