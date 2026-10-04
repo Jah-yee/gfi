@@ -290,6 +290,11 @@ class GitHubSearcher:
                 comments=item.get("commentsCount", 0),
             )
 
+            # Post-filter by language to catch cases where GitHub silently ignores
+            # an unrecognised language qualifier (leaving the baseline unfiltered).
+            if language and issue.language.casefold() != language.casefold():
+                continue
+
             if unassigned_only and issue.is_assigned:
                 continue
             yield issue
