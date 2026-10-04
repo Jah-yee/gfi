@@ -241,7 +241,7 @@ class GitHubSearcher:
             "--json",
             "number,title,url,state,labels,assignees,"
             "createdAt,updatedAt,body,commentsCount",
-            "--limit", str(limit),
+            "--limit", str(min(limit, 1000)),
         ]
 
         try:
@@ -330,7 +330,7 @@ class GitHubSearcher:
             "number,title,repository,url,state,labels,assignees,"
             "createdAt,updatedAt,body,commentsCount",
             "--sort", "updated",
-            "--limit", str(limit),
+            "--limit", str(min(limit, 1000)),
         ]
 
         try:
